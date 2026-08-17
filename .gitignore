@@ -1,0 +1,15 @@
+# APIキーなどを間違えてアップロードしないための設定
+.env
+*.env
+secrets.txt
+
+# Python が勝手に作るファイル
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Windows / Mac が勝手に作るファイル
+Thumbs.db
+desktop.ini
+.DS_Store

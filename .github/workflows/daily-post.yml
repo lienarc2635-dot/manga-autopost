@@ -1,0 +1,89 @@
+name: 毎日の自動投稿
+
+on:
+  schedule:
+    # ↓↓↓ 投稿時刻の設定。GitHub は「世界標準時(UTC)」で動くので、日本時間より9時間ぶん早い数字を書きます。
+    #     いまの設定「0 11 * * *」＝ UTC 11:00 ＝ 日本時間 20:00
+    #     例）日本時間 12:00 にしたい → '0 3 * * *'
+    #         日本時間 21:30 にしたい → '30 12 * * *'
+    #         日本時間  7:00 にしたい → '0 22 * * *'（前日のUTC22時になります）
+    #     ※ GitHub の混雑状況により、実際の実行は5〜30分ほど遅れることがあります。
+    - cron: '0 11 * * *'
+
+  # 手動でも実行できるようにしておく（テストのとき使います）
+  workflow_dispatch:
+    inputs:
+      date:
+        description: '投稿する日付（例 2026-08-20）。空なら今日'
+        required: false
+        default: ''
+      dry_run:
+        description: '本当に投稿せず、内容チェックだけする'
+        type: boolean
+        default: false
+      only:
+        description: '片方だけに投稿する（テスト用）'
+        type: choice
+        options: ['', 'threads', 'x']
+        default: ''
+
+# posts.csv のステータスと logs/posted.csv を書き戻すために必要
+permissions:
+  contents: write
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: リポジトリを取得
+        uses: actions/checkout@v4
+
+      - name: Python を準備
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 必要なライブラリをインストール
+        run: pip install -r requirements.txt
+
+      - name: 投稿を実行
+        id: post
+        continue-on-error: true   # 失敗してもログの保存まで進むようにする
+        env:
+          THREADS_USER_ID: ${{ secrets.THREADS_USER_ID }}
+          THREADS_ACCESS_TOKEN: ${{ secrets.THREADS_ACCESS_TOKEN }}
+          X_API_KEY: ${{ secrets.X_API_KEY }}
+          X_API_SECRET: ${{ secrets.X_API_SECRET }}
+          X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
+          X_ACCESS_TOKEN_SECRET: ${{ secrets.X_ACCESS_TOKEN_SECRET }}
+          # 画像の公開URLの共通部分。リポジトリ名が変わったらここも変わります。
+          IMAGE_BASE_URL: https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}
+          # ↓↓↓ X（旧Twitter）にも投稿したくなったら、false を true に書き換えてください。
+          #     （X Developer Portal での登録とクレジット購入、Secrets の登録が先に必要です）
+          ENABLE_X: 'false'
+        run: |
+          ARGS=""
+          if [ -n "${{ github.event.inputs.date }}" ]; then ARGS="$ARGS --date ${{ github.event.inputs.date }}"; fi
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+          if [ -n "${{ github.event.inputs.only }}" ]; then ARGS="$ARGS --only ${{ github.event.inputs.only }}"; fi
+          python post.py $ARGS
+
+      - name: 投稿記録をリポジトリに保存
+        run: |
+          git config user.name  "manga-autopost bot"
+          git config user.email "actions@github.com"
+          git add posts.csv logs/posted.csv
+          if git diff --staged --quiet; then
+            echo "保存する変更はありません。"
+          else
+            git commit -m "自動投稿の記録を更新 ($(TZ=Asia/Tokyo date '+%Y-%m-%d'))"
+            git push
+          fi
+
+      - name: 投稿が失敗していたらワークフローも失敗させる
+        # ここで失敗させることで、GitHub から依頼者のメールに通知が飛びます
+        if: steps.post.outcome == 'failure'
+        run: |
+          echo "::error::投稿に失敗しました。上の「投稿を実行」のログを確認してください。"
+          exit 1
