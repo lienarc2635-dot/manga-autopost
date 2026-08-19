@@ -1,0 +1,30 @@
+name: 初期設定（Threadsトークンの登録）
+
+# 最初に1回だけ手で実行するワークフローです。
+# 短期トークンを長期トークン（60日）に変換して、Secrets に自動で保存します。
+
+on:
+  workflow_dispatch:
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: リポジトリを取得
+        uses: actions/checkout@v4
+
+      - name: Python を準備
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 必要なライブラリをインストール
+        run: pip install -r requirements.txt
+
+      - name: トークンを変換して保存
+        env:
+          THREADS_SHORT_TOKEN: ${{ secrets.THREADS_SHORT_TOKEN }}
+          THREADS_APP_SECRET: ${{ secrets.THREADS_APP_SECRET }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: python setup_threads_token.py
