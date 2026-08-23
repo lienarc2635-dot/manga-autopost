@@ -39,6 +39,7 @@ except ImportError:  # Python 3.8 以下は対象外だが念のため
 BASE_DIR = Path(__file__).resolve().parent
 POSTS_CSV = BASE_DIR / "posts.csv"
 LOG_CSV = BASE_DIR / "logs" / "posted.csv"
+INSTAGRAM_CSV = BASE_DIR / "instagram.csv"
 
 JST = ZoneInfo("Asia/Tokyo") if ZoneInfo else None
 
@@ -46,6 +47,8 @@ JST = ZoneInfo("Asia/Tokyo") if ZoneInfo else None
 X_WEIGHTED_LIMIT = 280
 # Threads の文字数上限
 THREADS_LIMIT = 500
+# Instagram のキャプション上限
+INSTAGRAM_CAPTION_LIMIT = 2200
 
 # Threads のメディアコンテナが準備できるまで待つ最大秒数
 THREADS_CONTAINER_TIMEOUT = 90
@@ -56,6 +59,7 @@ COL_IMAGE = "画像ファイル"
 COL_X_TEXT = "X本文"
 COL_TH_TEXT = "Threads本文"
 COL_STATUS = "ステータス"
+COL_CAPTION = "キャプション"
 CSV_COLUMNS = [COL_DATE, COL_IMAGE, COL_X_TEXT, COL_TH_TEXT, COL_STATUS]
 
 LOG_COLUMNS = ["日時", "投稿日", "画像ファイル", "プラットフォーム", "結果", "投稿ID", "エラー内容"]
@@ -569,8 +573,28 @@ def post_to_instagram(caption: str, image_urls: list[str]) -> str:
     return str(pub.json().get("id", ""))
 
 
-def build_instagram_caption(rows_for_day: list[dict]) -> str:
-    """その日の3枚分の本文をつなげて、Instagramのキャプションにする。"""
+def build_instagram_caption(target_date: str, rows_for_day: list[dict]) -> str:
+    """Instagramのキャプションを決める。
+
+    instagram.csv にその日のキャプションがあればそれを使います。
+    なければ、Threads本文を3枚分つないだものを使います（保険）。
+    """
+    if INSTAGRAM_CSV.exists():
+        with INSTAGRAM_CSV.open("r", encoding="utf-8-sig", newline="") as f:
+            for entry in csv.DictReader(f):
+                if (entry.get(COL_DATE) or "").strip() == target_date:
+                    caption = (entry.get(COL_CAPTION) or "").strip()
+                    if caption:
+                        if len(caption) > INSTAGRAM_CAPTION_LIMIT:
+                            raise PostError(
+                                f"Instagramのキャプションが長すぎます"
+                                f"（{len(caption)}文字 / 上限{INSTAGRAM_CAPTION_LIMIT}文字）。"
+                                f"instagram.csv の {target_date} の行を短くしてください。"
+                            )
+                        log("  [Instagram] instagram.csv のキャプションを使います。")
+                        return caption
+
+    log("  [Instagram] instagram.csv に該当行がないため、Threads本文をつないで使います。")
     parts = []
     for row in rows_for_day:
         text = (row.get(COL_TH_TEXT) or "").strip()
@@ -775,7 +799,7 @@ def main() -> int:
         else:
             try:
                 post_id = post_to_instagram(
-                    build_instagram_caption(day_rows),
+                    build_instagram_caption(target_date, day_rows),
                     [build_instagram_image_url(img) for img in images],
                 )
                 log(f"  ✓ Instagram 投稿成功 (id={post_id})")

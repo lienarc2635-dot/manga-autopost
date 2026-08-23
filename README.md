@@ -229,3 +229,48 @@ manga-autopost/
     ├── daily-post.yml             毎日の実行設定（時刻・X切替はここ）
     └── refresh-token.yml          トークン延長の実行設定
 ```
+
+---
+
+## Instagram について
+
+Threadsと同じ日に、**その日の3枚を1つのカルーセル投稿**（横スワイプ）としてInstagramにも投稿できます。
+Instagramには「ツリー返信」がないため、カルーセルがツリーの代わりになります。
+
+### 画像が別フォルダになっている理由
+
+Instagramは**縦横比 4:5 までしか受け付けません**。漫画は 2:3 とそれより縦長なので、
+そのままだと上下が切れてしまいます。
+
+そのため `images_ig/` に、左右へ白い余白を足して 4:5 にした画像を用意しています。
+**漫画そのものは一切切れていません。**
+
+新しい漫画を足したら、次を実行して `images_ig/` も更新してください。
+
+```bash
+powershell -ExecutionPolicy Bypass -File tools\make-instagram-images.ps1
+```
+
+### キャプションは `instagram.csv`
+
+Instagramのキャプションは `instagram.csv` に、**1日1行**で書いてあります。
+
+| 列 | 内容 |
+|---|---|
+| 投稿日 | `2026-08-25` 形式（`posts.csv` の日付と合わせる） |
+| キャプション | Instagramに載せる文（2200文字まで） |
+
+Threadsとは文面を変えてあります（Instagramは最初の2行しか表示されないため、
+フックを先頭に置き、ハッシュタグを末尾にまとめています）。
+
+その日の行がない場合は、Threads本文を3枚分つないだものが自動で使われます。
+
+### Instagramを有効にする手順
+
+1. Instagramアカウントを**プロアカウント**（ビジネス／クリエイター）にする
+2. Meta for Developers のアプリに **Instagram** のユースケースを追加する
+3. `instagram_business_basic` と `instagram_business_content_publish` の権限を追加する
+4. アクセストークンを発行し、GitHub の Secrets に `INSTAGRAM_ACCESS_TOKEN` として登録する
+5. `.github/workflows/daily-post.yml` の `ENABLE_INSTAGRAM: 'false'` を **`'true'`** に書き換える
+
+> Instagramの投稿は **1日25件まで**という上限があります。1日1投稿なので問題ありません。
