@@ -1,4 +1,4 @@
-# 漫画の画像を、Threads / X に投稿できるサイズに縮小するスクリプト（Windows用）
+﻿# 漫画の画像を、Threads / X に投稿できるサイズに縮小するスクリプト（Windows用）
 #
 # 使い方（PowerShell を開いて、次の1行を実行）:
 #   powershell -ExecutionPolicy Bypass -File tools\resize-images.ps1 -Source "C:\AI\manga"
@@ -30,7 +30,7 @@ $params.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Dr
 $count = 0
 $maxKB = 0
 
-Get-ChildItem -Path $Source -Include *.png, *.jpg, *.jpeg -File -Recurse:$false | ForEach-Object {
+Get-ChildItem -Path $Source -File | Where-Object { $_.Extension -in '.png', '.jpg', '.jpeg' } | Sort-Object Name | ForEach-Object {
     $img = [System.Drawing.Image]::FromFile($_.FullName)
     $w = $img.Width
     $h = $img.Height
