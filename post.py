@@ -186,15 +186,41 @@ def _threads_error_message(response: requests.Response) -> str:
     return f"Threadsのエラー (code={code}): {detail}"
 
 
+def fetch_threads_user_id(token: str) -> str:
+    """アクセストークンから自分のThreadsユーザーIDを取得する。
+
+    THREADS_USER_ID を手で登録しなくて済むように、毎回APIで取ってきます。
+    """
+    res = requests.get(
+        f"{THREADS_API}/me",
+        params={"fields": "id,username", "access_token": token},
+        timeout=30,
+    )
+    if res.status_code != 200:
+        raise PostError(_threads_error_message(res))
+
+    body = res.json()
+    user_id = str(body.get("id", ""))
+    if not user_id:
+        raise PostError(f"ThreadsのユーザーIDを取得できませんでした: {res.text[:200]}")
+
+    log(f"  [Threads] 投稿先アカウント: @{body.get('username', '(不明)')}")
+    return user_id
+
+
 def post_to_threads(text: str, image_url: str) -> str:
     """Threads に画像付きで投稿し、投稿IDを返す。失敗したら PostError を投げる。"""
-    user_id = os.environ.get("THREADS_USER_ID", "").strip()
     token = os.environ.get("THREADS_ACCESS_TOKEN", "").strip()
-    if not user_id or not token:
+    if not token:
         raise PostError(
-            "Threadsの設定がありません。GitHub の Secrets に "
-            "THREADS_USER_ID と THREADS_ACCESS_TOKEN を登録してください。"
+            "Threadsの設定がありません。GitHub の Settings → Secrets に "
+            "THREADS_ACCESS_TOKEN を登録してください。"
         )
+
+    # ユーザーIDは登録されていれば使い、なければトークンから自動取得する
+    user_id = os.environ.get("THREADS_USER_ID", "").strip()
+    if not user_id:
+        user_id = fetch_threads_user_id(token)
 
     # --- ステップ1: メディアコンテナを作る -------------------------------
     log(f"  [Threads] メディアコンテナを作成中… image_url={image_url}")

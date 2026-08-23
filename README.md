@@ -179,7 +179,7 @@ GitHub は世界標準時（UTC）で動くので、**日本時間から9時間�
 
 | 名前 | 何のキーか | 今すぐ必要? |
 |---|---|---|
-| `THREADS_USER_ID` | ThreadsのユーザーID（数字） | ○ 必須 |
+| `THREADS_USER_ID` | ThreadsのユーザーID | — 不要（トークンから自動取得します） |
 | `THREADS_ACCESS_TOKEN` | Threadsの長期アクセストークン | ○ 必須 |
 | `GH_PAT` | GitHubの個人アクセストークン（下記） | △ 推奨 |
 | `X_API_KEY` 他3つ | X のキー | ✕ Xを足すときだけ |
