@@ -402,6 +402,184 @@ def post_to_x(text: str, image_path: Path, reply_to_id: str = "") -> str:
 
 
 # ---------------------------------------------------------------------------
+# Instagram への投稿
+# ---------------------------------------------------------------------------
+
+INSTAGRAM_API = "https://graph.instagram.com/v23.0"
+
+
+def _instagram_error_message(response: requests.Response) -> str:
+    """Instagram API のエラーを、依頼者が読んでわかる日本語にする。"""
+    try:
+        err = response.json().get("error", {})
+    except ValueError:
+        return f"HTTP {response.status_code}: {response.text[:300]}"
+
+    code = err.get("code")
+    detail = err.get("error_user_msg") or err.get("message", response.text[:300])
+
+    if code == 190:
+        return (
+            "Instagramのアクセストークンが切れました。再取得が必要です。"
+            "（Meta for Developers でトークンを取り直し、GitHub の Secrets → "
+            "INSTAGRAM_ACCESS_TOKEN を更新してください）"
+            f" / 元のメッセージ: {detail}"
+        )
+    if code == 4 or code == 9:
+        return (
+            "Instagramの1日の投稿上限（25件）に達しました。時間をおいて再試行してください。"
+            f" / {detail}"
+        )
+    if code == 36003 or "aspect ratio" in str(detail).lower():
+        return (
+            "Instagramが画像の縦横比を受け付けませんでした。"
+            "images_ig/ の画像（4:5に調整したもの）を使っているか確認してください。"
+            f" / {detail}"
+        )
+    return f"Instagramのエラー (code={code}): {detail}"
+
+
+def fetch_instagram_user_id(token: str) -> str:
+    """アクセストークンから自分のInstagramユーザーIDを取得する。"""
+    res = requests.get(
+        f"{INSTAGRAM_API}/me",
+        params={"fields": "user_id,username", "access_token": token},
+        timeout=30,
+    )
+    if res.status_code != 200:
+        raise PostError(_instagram_error_message(res))
+
+    body = res.json()
+    user_id = str(body.get("user_id") or body.get("id") or "")
+    if not user_id:
+        raise PostError(f"InstagramのユーザーIDを取得できませんでした: {res.text[:200]}")
+
+    log(f"  [Instagram] 投稿先アカウント: @{body.get('username', '(不明)')}")
+    return user_id
+
+
+def _instagram_wait(container_id: str, token: str) -> None:
+    """コンテナの準備が終わるまで待つ。"""
+    deadline = time.time() + THREADS_CONTAINER_TIMEOUT
+    while True:
+        time.sleep(5)
+        res = requests.get(
+            f"{INSTAGRAM_API}/{container_id}",
+            params={"fields": "status_code,status", "access_token": token},
+            timeout=30,
+        )
+        if res.status_code != 200:
+            raise PostError(_instagram_error_message(res))
+
+        status = res.json().get("status_code")
+        if status == "FINISHED":
+            return
+        if status == "ERROR":
+            raise PostError(
+                "Instagramが画像を読み込めませんでした。"
+                f"詳細: {res.json().get('status')}"
+            )
+        if time.time() > deadline:
+            raise PostError(
+                f"Instagramの画像取り込みが{THREADS_CONTAINER_TIMEOUT}秒以内に終わりませんでした。"
+            )
+        log(f"  [Instagram] 画像の取り込み待ち… (status={status})")
+
+
+def post_to_instagram(caption: str, image_urls: list[str]) -> str:
+    """Instagram にカルーセル（複数枚を横スワイプ）で投稿し、投稿IDを返す。
+
+    Threads のようなツリー返信はInstagramにないため、
+    1日分の3枚を「1つのカルーセル投稿」にまとめます。
+    """
+    token = os.environ.get("INSTAGRAM_ACCESS_TOKEN", "").strip()
+    if not token:
+        raise PostError(
+            "Instagramの設定がありません。GitHub の Settings → Secrets に "
+            "INSTAGRAM_ACCESS_TOKEN を登録してください。"
+        )
+
+    user_id = os.environ.get("INSTAGRAM_USER_ID", "").strip()
+    if not user_id:
+        user_id = fetch_instagram_user_id(token)
+
+    # 1枚だけならカルーセルにせず、普通の画像投稿にする
+    if len(image_urls) == 1:
+        log("  [Instagram] 画像1枚のため、通常の投稿として作成します。")
+        res = requests.post(
+            f"{INSTAGRAM_API}/{user_id}/media",
+            data={"image_url": image_urls[0], "caption": caption, "access_token": token},
+            timeout=60,
+        )
+        if res.status_code != 200:
+            raise PostError(_instagram_error_message(res))
+        container_id = res.json().get("id")
+        _instagram_wait(container_id, token)
+    else:
+        # --- ステップ1: 1枚ずつ「カルーセルの部品」を作る -------------------
+        children = []
+        for i, url in enumerate(image_urls, start=1):
+            log(f"  [Instagram] {i}枚目を準備中… {url}")
+            res = requests.post(
+                f"{INSTAGRAM_API}/{user_id}/media",
+                data={
+                    "image_url": url,
+                    "is_carousel_item": "true",
+                    "access_token": token,
+                },
+                timeout=60,
+            )
+            if res.status_code != 200:
+                raise PostError(_instagram_error_message(res))
+            child_id = res.json().get("id")
+            if not child_id:
+                raise PostError(f"Instagramの画像準備に失敗しました: {res.text[:300]}")
+            _instagram_wait(child_id, token)
+            children.append(str(child_id))
+
+        # --- ステップ2: 部品をまとめてカルーセルにする ----------------------
+        log(f"  [Instagram] {len(children)}枚をカルーセルにまとめています…")
+        res = requests.post(
+            f"{INSTAGRAM_API}/{user_id}/media",
+            data={
+                "media_type": "CAROUSEL",
+                "children": ",".join(children),
+                "caption": caption,
+                "access_token": token,
+            },
+            timeout=60,
+        )
+        if res.status_code != 200:
+            raise PostError(_instagram_error_message(res))
+        container_id = res.json().get("id")
+        if not container_id:
+            raise PostError(f"Instagramのカルーセル作成に失敗しました: {res.text[:300]}")
+        _instagram_wait(container_id, token)
+
+    # --- ステップ3: 公開する -------------------------------------------------
+    log("  [Instagram] 公開中…")
+    pub = requests.post(
+        f"{INSTAGRAM_API}/{user_id}/media_publish",
+        data={"creation_id": container_id, "access_token": token},
+        timeout=60,
+    )
+    if pub.status_code != 200:
+        raise PostError(_instagram_error_message(pub))
+
+    return str(pub.json().get("id", ""))
+
+
+def build_instagram_caption(rows_for_day: list[dict]) -> str:
+    """その日の3枚分の本文をつなげて、Instagramのキャプションにする。"""
+    parts = []
+    for row in rows_for_day:
+        text = (row.get(COL_TH_TEXT) or "").strip()
+        if text:
+            parts.append(text)
+    return "\n\n────────\n\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
 # 事前チェック
 # ---------------------------------------------------------------------------
 
@@ -439,7 +617,7 @@ def validate_row(row: dict, index: int) -> list[str]:
 
 
 def build_image_url(image_rel: str) -> str:
-    """images/01.png → https://.../images/01.png（ネットから見えるURL）に変換する。"""
+    """images/1-1.jpg → https://.../images/1-1.jpg（ネットから見えるURL）に変換する。"""
     base = os.environ.get("IMAGE_BASE_URL", "").strip()
     if not base:
         raise PostError(
@@ -447,6 +625,18 @@ def build_image_url(image_rel: str) -> str:
             "GitHub Actions の設定（daily-post.yml）を確認してください。"
         )
     return base.rstrip("/") + "/" + image_rel.replace("\\", "/").lstrip("/")
+
+
+def build_instagram_image_url(image_rel: str) -> str:
+    """Instagram用の画像URLに変換する。
+
+    Instagramは縦横比 4:5 までしか受け付けないので、
+    左右に白い余白を足した images_ig/ の画像を使います。
+    """
+    ig_rel = image_rel.replace("\\", "/").lstrip("/")
+    if ig_rel.startswith("images/"):
+        ig_rel = "images_ig/" + ig_rel[len("images/"):]
+    return build_image_url(ig_rel)
 
 
 # ---------------------------------------------------------------------------
@@ -458,7 +648,7 @@ def main() -> int:
     parser.add_argument("--date", help="投稿する日付（例 2026-08-20）。省略時は今日（日本時間）")
     parser.add_argument("--dry-run", action="store_true",
                         help="実際には投稿せず、内容チェックだけ行う")
-    parser.add_argument("--only", choices=["x", "threads"],
+    parser.add_argument("--only", choices=["x", "threads", "instagram"],
                         help="片方のSNSだけに投稿する（テスト用）")
     parser.add_argument("--validate-all", action="store_true",
                         help="posts.csv の全行をチェックする（投稿はしない）")
@@ -563,6 +753,41 @@ def main() -> int:
                 exit_code = 1
                 log("  ツリーが途切れるため、この日の残りの投稿は中止します。")
                 break
+
+    # --- Instagram へカルーセル投稿 -----------------------------------------
+    # Instagramにはツリー返信がないので、3枚を1つの「横スワイプ投稿」にまとめます。
+    # Threads が失敗しても Instagram は投稿します。
+    enable_ig = os.environ.get("ENABLE_INSTAGRAM", "false").strip().lower() in ("1", "true", "yes")
+    want_ig = args.only == "instagram" or (args.only is None and enable_ig)
+
+    if args.only is None and not enable_ig:
+        log("  [Instagram] ENABLE_INSTAGRAM が false のため、Instagramへの投稿はスキップします。")
+
+    if want_ig:
+        day_rows = [row for _, row in targets]
+        images = [(row.get(COL_IMAGE) or "").strip() for row in day_rows]
+        marker = "instagram:" + images[0]  # カルーセルは1投稿なので1枚目の名前で記録
+
+        log(f"\n▼ [Instagram] {target_date} / {len(images)}枚のカルーセル")
+
+        if already_posted(marker, "Instagram"):
+            log("  [Instagram] 既に投稿済みのためスキップします。")
+        else:
+            try:
+                post_id = post_to_instagram(
+                    build_instagram_caption(day_rows),
+                    [build_instagram_image_url(img) for img in images],
+                )
+                log(f"  ✓ Instagram 投稿成功 (id={post_id})")
+                append_log(target_date, marker, "Instagram", True, post_id)
+            except PostError as e:
+                log(f"  ✗ Instagram 投稿失敗: {e}")
+                append_log(target_date, marker, "Instagram", False, error=str(e))
+                exit_code = 1
+            except Exception as e:
+                log(f"  ✗ Instagram 投稿失敗（想定外のエラー）: {e}")
+                append_log(target_date, marker, "Instagram", False, error=repr(e))
+                exit_code = 1
 
     # --- X へツリー投稿 -----------------------------------------------------
     # Threads が失敗しても X は投稿する（片方の失敗で全体を止めない）
