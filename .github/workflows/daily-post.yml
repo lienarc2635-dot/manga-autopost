@@ -75,7 +75,7 @@ jobs:
         run: |
           git config user.name  "manga-autopost bot"
           git config user.email "actions@github.com"
-          git add posts.csv logs/posted.csv
+          git add -A posts.csv logs/ 2>/dev/null || true
           if git diff --staged --quiet; then
             echo "保存する変更はありません。"
           else
