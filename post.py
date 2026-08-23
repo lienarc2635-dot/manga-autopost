@@ -146,10 +146,13 @@ def append_log(post_date: str, image: str, platform: str, ok: bool,
         })
 
 
-def already_posted(post_date: str, platform: str) -> bool:
-    """その日・そのSNSに既に「成功」の記録があるか（二重投稿の防止）。"""
+def already_posted(image_rel: str, platform: str) -> bool:
+    """その画像・そのSNSに既に「成功」の記録があるか（二重投稿の防止）。
+
+    1日に複数枚を投稿するので、日付ではなく画像ファイル名で判定します。
+    """
     for entry in read_log():
-        if (entry.get("投稿日") == post_date
+        if (entry.get("画像ファイル") == image_rel
                 and entry.get("プラットフォーム") == platform
                 and entry.get("結果") == "成功"):
             return True
@@ -208,8 +211,12 @@ def fetch_threads_user_id(token: str) -> str:
     return user_id
 
 
-def post_to_threads(text: str, image_url: str) -> str:
-    """Threads に画像付きで投稿し、投稿IDを返す。失敗したら PostError を投げる。"""
+def post_to_threads(text: str, image_url: str, reply_to_id: str = "") -> str:
+    """Threads に画像付きで投稿し、投稿IDを返す。失敗したら PostError を投げる。
+
+    reply_to_id を渡すと、その投稿への「返信」として投稿します。
+    これを数珠つなぎにすることで、1日3枚のツリー投稿になります。
+    """
     token = os.environ.get("THREADS_ACCESS_TOKEN", "").strip()
     if not token:
         raise PostError(
@@ -223,15 +230,20 @@ def post_to_threads(text: str, image_url: str) -> str:
         user_id = fetch_threads_user_id(token)
 
     # --- ステップ1: メディアコンテナを作る -------------------------------
-    log(f"  [Threads] メディアコンテナを作成中… image_url={image_url}")
+    kind = "返信" if reply_to_id else "1枚目"
+    log(f"  [Threads] メディアコンテナを作成中（{kind}）… image_url={image_url}")
+    payload = {
+        "media_type": "IMAGE",
+        "image_url": image_url,
+        "text": text,
+        "access_token": token,
+    }
+    if reply_to_id:
+        payload["reply_to_id"] = reply_to_id
+
     res = requests.post(
         f"{THREADS_API}/{user_id}/threads",
-        data={
-            "media_type": "IMAGE",
-            "image_url": image_url,
-            "text": text,
-            "access_token": token,
-        },
+        data=payload,
         timeout=60,
     )
     if res.status_code != 200:
@@ -362,18 +374,25 @@ def _x_upload_media(image_path: Path, auth: OAuth1) -> str:
     raise PostError(f"Xへの画像アップロードに失敗しました: {last_error}")
 
 
-def post_to_x(text: str, image_path: Path) -> str:
-    """X に画像付きで投稿し、投稿IDを返す。失敗したら PostError を投げる。"""
+def post_to_x(text: str, image_path: Path, reply_to_id: str = "") -> str:
+    """X に画像付きで投稿し、投稿IDを返す。失敗したら PostError を投げる。
+
+    reply_to_id を渡すと、その投稿への返信（ツリー）として投稿します。
+    """
     auth = _x_auth()
 
     log("  [X] 画像をアップロード中…")
     media_id = _x_upload_media(image_path, auth)
 
     log("  [X] 投稿中…")
+    body = {"text": text, "media": {"media_ids": [media_id]}}
+    if reply_to_id:
+        body["reply"] = {"in_reply_to_tweet_id": reply_to_id}
+
     res = requests.post(
         "https://api.x.com/2/tweets",
         auth=auth,
-        json={"text": text, "media": {"media_ids": [media_id]}},
+        json=body,
         timeout=60,
     )
     if res.status_code not in (200, 201):
@@ -476,90 +495,107 @@ def main() -> int:
         return 0
 
     exit_code = 0
+    log(f"　この日は {len(targets)} 枚をツリー投稿します。")
 
+    # --- 事前チェック（1枚でもおかしければ、この日は投稿しない）-------------
+    all_problems = []
     for index, row in targets:
-        image_rel = (row.get(COL_IMAGE) or "").strip()
-        x_text = (row.get(COL_X_TEXT) or "").strip()
-        th_text = (row.get(COL_TH_TEXT) or "").strip()
-        image_path = BASE_DIR / image_rel
+        all_problems += validate_row(row, index)
+    if all_problems:
+        for p in all_problems:
+            log("  ✗ " + p)
+        append_log(target_date, "", "検証", False, error=" / ".join(all_problems))
+        return 1
 
-        log(f"\n▼ {target_date} / {image_rel}")
+    # --- 確認のみモード ----------------------------------------------------
+    if args.dry_run:
+        for order, (index, row) in enumerate(targets, start=1):
+            image_rel = (row.get(COL_IMAGE) or "").strip()
+            th_text = (row.get(COL_TH_TEXT) or "").strip()
+            log(f"\n  [確認のみ] {order}枚目 {image_rel}")
+            log(f"    画像URL: {build_image_url(image_rel)}")
+            log(f"    本文（{len(th_text)}文字）: {th_text}")
+        return 0
 
-        problems = validate_row(row, index)
-        if problems:
-            for p in problems:
-                log("  ✗ " + p)
-            append_log(target_date, image_rel, "検証", False, error=" / ".join(problems))
-            exit_code = 1
-            continue
+    # X を使うかどうか。GitHub Actions の ENABLE_X で切り替えます。
+    # （最初は Threads だけで運用し、あとから X を足せるようにしています）
+    enable_x = os.environ.get("ENABLE_X", "false").strip().lower() in ("1", "true", "yes")
+    want_threads = args.only in (None, "threads")
+    want_x = args.only == "x" or (args.only is None and enable_x)
 
-        if args.dry_run:
-            log(f"  [確認のみ] X本文（{x_weighted_length(x_text) // 2}文字相当）: {x_text}")
-            log(f"  [確認のみ] Threads本文（{len(th_text)}文字）: {th_text}")
-            log(f"  [確認のみ] 画像URL: {build_image_url(image_rel)}")
-            continue
+    if args.only is None and not enable_x:
+        log("  [X] ENABLE_X が false のため、Xへの投稿はスキップします。")
 
-        results = {}
+    # --- Threads へツリー投稿 ----------------------------------------------
+    # 1枚目を普通に投稿し、2枚目以降は「直前の投稿への返信」として繋げます。
+    if want_threads:
+        parent_id = ""
+        for order, (index, row) in enumerate(targets, start=1):
+            image_rel = (row.get(COL_IMAGE) or "").strip()
+            th_text = (row.get(COL_TH_TEXT) or "").strip()
 
-        # X を使うかどうか。GitHub Actions の ENABLE_X で切り替えます。
-        # （最初は Threads だけで運用し、あとから X を足せるようにしています）
-        enable_x = os.environ.get("ENABLE_X", "false").strip().lower() in ("1", "true", "yes")
-        want_threads = args.only in (None, "threads")
-        want_x = args.only == "x" or (args.only is None and enable_x)
+            log(f"\n▼ {target_date} / {order}枚目 / {image_rel}")
 
-        if args.only is None and not enable_x:
-            log("  [X] ENABLE_X が false のため、Xへの投稿はスキップします。")
-
-        # --- Threads ------------------------------------------------------
-        if want_threads:
-            if already_posted(target_date, "Threads"):
+            if already_posted(image_rel, "Threads"):
                 log("  [Threads] 既に投稿済みのためスキップします。")
-                results["Threads"] = True
-            else:
-                try:
-                    post_id = post_to_threads(th_text, build_image_url(image_rel))
-                    log(f"  ✓ Threads 投稿成功 (id={post_id})")
-                    append_log(target_date, image_rel, "Threads", True, post_id)
-                    results["Threads"] = True
-                except PostError as e:
-                    log(f"  ✗ Threads 投稿失敗: {e}")
-                    append_log(target_date, image_rel, "Threads", False, error=str(e))
-                    results["Threads"] = False
-                except Exception as e:  # 想定外のエラーでも X の投稿は続ける
-                    log(f"  ✗ Threads 投稿失敗（想定外のエラー）: {e}")
-                    append_log(target_date, image_rel, "Threads", False, error=repr(e))
-                    results["Threads"] = False
+                rows[index][COL_STATUS] = "済"
+                continue
 
-        # --- X ------------------------------------------------------------
-        # Threads が失敗しても X は投稿する（片方の失敗で全体を止めない）
-        if want_x:
-            if already_posted(target_date, "X"):
+            try:
+                post_id = post_to_threads(
+                    th_text, build_image_url(image_rel), reply_to_id=parent_id
+                )
+                log(f"  ✓ Threads 投稿成功 (id={post_id})")
+                append_log(target_date, image_rel, "Threads", True, post_id)
+                rows[index][COL_STATUS] = "済"
+                parent_id = post_id  # 次の1枚をこの投稿にぶら下げる
+            except PostError as e:
+                log(f"  ✗ Threads 投稿失敗: {e}")
+                append_log(target_date, image_rel, "Threads", False, error=str(e))
+                rows[index][COL_STATUS] = "失敗"
+                exit_code = 1
+                log("  ツリーが途切れるため、この日の残りの投稿は中止します。")
+                break
+            except Exception as e:
+                log(f"  ✗ Threads 投稿失敗（想定外のエラー）: {e}")
+                append_log(target_date, image_rel, "Threads", False, error=repr(e))
+                rows[index][COL_STATUS] = "失敗"
+                exit_code = 1
+                log("  ツリーが途切れるため、この日の残りの投稿は中止します。")
+                break
+
+    # --- X へツリー投稿 -----------------------------------------------------
+    # Threads が失敗しても X は投稿する（片方の失敗で全体を止めない）
+    if want_x:
+        parent_id = ""
+        for order, (index, row) in enumerate(targets, start=1):
+            image_rel = (row.get(COL_IMAGE) or "").strip()
+            x_text = (row.get(COL_X_TEXT) or "").strip()
+            image_path = BASE_DIR / image_rel
+
+            log(f"\n▼ [X] {target_date} / {order}枚目 / {image_rel}")
+
+            if already_posted(image_rel, "X"):
                 log("  [X] 既に投稿済みのためスキップします。")
-                results["X"] = True
-            else:
-                try:
-                    post_id = post_to_x(x_text, image_path)
-                    log(f"  ✓ X 投稿成功 (id={post_id})")
-                    append_log(target_date, image_rel, "X", True, post_id)
-                    results["X"] = True
-                except PostError as e:
-                    log(f"  ✗ X 投稿失敗: {e}")
-                    append_log(target_date, image_rel, "X", False, error=str(e))
-                    results["X"] = False
-                except Exception as e:
-                    log(f"  ✗ X 投稿失敗（想定外のエラー）: {e}")
-                    append_log(target_date, image_rel, "X", False, error=repr(e))
-                    results["X"] = False
+                continue
 
-        # --- ステータスを更新 ----------------------------------------------
-        if all(results.values()):
-            rows[index][COL_STATUS] = "済"
-        elif any(results.values()):
-            rows[index][COL_STATUS] = "一部失敗"
-            exit_code = 1
-        else:
-            rows[index][COL_STATUS] = "失敗"
-            exit_code = 1
+            try:
+                post_id = post_to_x(x_text, image_path, reply_to_id=parent_id)
+                log(f"  ✓ X 投稿成功 (id={post_id})")
+                append_log(target_date, image_rel, "X", True, post_id)
+                parent_id = post_id
+            except PostError as e:
+                log(f"  ✗ X 投稿失敗: {e}")
+                append_log(target_date, image_rel, "X", False, error=str(e))
+                exit_code = 1
+                log("  ツリーが途切れるため、この日の残りの投稿は中止します。")
+                break
+            except Exception as e:
+                log(f"  ✗ X 投稿失敗（想定外のエラー）: {e}")
+                append_log(target_date, image_rel, "X", False, error=repr(e))
+                exit_code = 1
+                log("  ツリーが途切れるため、この日の残りの投稿は中止します。")
+                break
 
     if not args.dry_run:
         write_posts(rows)
