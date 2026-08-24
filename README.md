@@ -27,36 +27,51 @@
 ## 毎日やること：なし
 
 一度セットアップが終わったら、日々の作業はありません。
-**新しい漫画を足すときだけ**、次の2ステップをやります。
+**新しい漫画を足すときだけ**、次の3ステップをやります。
 
-### 新しい漫画を追加する手順（2ステップ）
+### 新しい漫画を追加する手順（3ステップ）
 
-**ステップ1：画像を入れる**
+**ステップ1：`C:\AI\manga` に画像を入れる**
 
-1. GitHub でこのリポジトリを開く
-2. `images` フォルダをクリック
-3. 右上の **「Add file」→「Upload files」** をクリック
-4. 画像ファイルをドラッグして、下の緑のボタン **「Commit changes」** を押す
+いつも漫画を作っている `C:\AI\manga` フォルダに、新しい画像をそのまま入れてください。
 
-> ⚠️ **画像は1枚 8MB 未満にしてください。** Threads は 8MB を超える画像を受け付けません。
-> 大きい画像は、下の[画像を小さくする](#画像を小さくする)の手順で縮小してから入れてください。
+> ファイル名は **`27-1.png` `27-2.png` `27-3.png`** のように、
+> **「番号 - 枚数」** の形にしてください。この3枚が1日分（1つのツリー）になります。
 >
-> ファイル名は `34.jpg` のように、**半角の英数字**にしてください。
+> 番号は続きから振ります（今は26まで使っているので、次は27です）。
+> サイズは気にしなくて大丈夫です。次のステップで自動的に調整されます。
 
-**ステップ2：`posts.csv` に3行足す**
+**ステップ2：変換スクリプトを1回実行する**
 
-1. GitHub で `posts.csv` をクリック
-2. 右上の **鉛筆マーク（Edit this file）** をクリック
-3. 一番下に、次のような3行を足す（**3行とも同じ日付**にすると1つのツリーになります）
-4. 緑のボタン **「Commit changes」** を押す
+PowerShell を開いて、次の1行を実行します。
 
-```
-2026-09-20,images/27-1.jpg,Xに出す文,Threadsに出す文,
-2026-09-20,images/27-2.jpg,Xに出す文,Threadsに出す文,
-2026-09-20,images/27-3.jpg,Xに出す文,Threadsに出す文,
+```bash
+powershell -ExecutionPolicy Bypass -File C:\AI\manga-autopost\tools\add-manga.ps1
 ```
 
-これで、2026年9月20日の20時に3枚がツリーで自動投稿されます。
+これだけで、
+
+- Threads用の画像（`images/`）
+- Instagram用の4:5画像（`images_ig/`）
+
+の両方が作られます。さらに、**新しく増えた画像を見つけて、`posts.csv` と `instagram.csv` に貼り付ける雛形を日付つきで表示**してくれます。
+
+**ステップ3：文章を書いて、アップロードする**
+
+表示された雛形の「ここにThreads本文」などを実際の文章に置き換えて、
+
+- `posts.csv` の一番下（3行）
+- `instagram.csv` の一番下（1行）
+
+に貼り付けて保存します。そのあと次を実行するとGitHubに反映され、指定日の朝6時に自動投稿されます。
+
+```bash
+powershell -ExecutionPolicy Bypass -File C:\AI\manga-autopost\tools\add-manga.ps1 -Push
+```
+
+> 文章を考えるのが大変なときは、画像を `C:\AI\manga` に入れた状態で
+> 「漫画を追加したので投稿文を作って」と Claude Code に頼めば、
+> 中身を読んで文案を作り、CSVへの追加とアップロードまでやってもらえます。
 
 ---
 
@@ -219,12 +234,16 @@ Threadsのトークンは **60日で切れます**。
 
 ```
 manga-autopost/
-├── images/                        漫画の画像（42枚）
+├── images/                        漫画の画像（78枚）
 ├── posts.csv                      投稿スケジュールと本文
 ├── post.py                        投稿の本体（触らなくてOK）
 ├── refresh_threads_token.py       Threadsトークンの自動延長（触らなくてOK）
 ├── requirements.txt               必要な部品の一覧（触らなくてOK）
-├── tools/resize-images.ps1        画像を縮小する道具
+├── instagram.csv                  Instagramのキャプション（1日1行）
+├── images_ig/                     Instagram用の4:5画像（自動生成）
+├── tools/add-manga.ps1            漫画を追加するとき実行する道具
+├── tools/resize-images.ps1        Threads用に縮小（add-manga から呼ばれます）
+├── tools/make-instagram-images.ps1 Instagram用に4:5化（同上）
 ├── logs/posted.csv                投稿の記録（自動で作られます）
 └── .github/workflows/
     ├── daily-post.yml             毎日の実行設定（時刻・X切替はここ）
