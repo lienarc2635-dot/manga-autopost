@@ -61,7 +61,7 @@ jobs:
           # 画像の公開URLの共通部分。リポジトリ名が変わったらここも変わります。
           IMAGE_BASE_URL: https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}
           # ↓↓↓ Instagramにも投稿したくなったら false を true に書き換えてください。
-          ENABLE_INSTAGRAM: 'false'
+          ENABLE_INSTAGRAM: 'true'
           # ↓↓↓ X（旧Twitter）にも投稿したくなったら false を true に書き換えてください。
           ENABLE_X: 'false'
         run: |
