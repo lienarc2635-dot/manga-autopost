@@ -150,17 +150,24 @@ def append_log(post_date: str, image: str, platform: str, ok: bool,
         })
 
 
-def already_posted(image_rel: str, platform: str) -> bool:
-    """その画像・そのSNSに既に「成功」の記録があるか（二重投稿の防止）。
+def posted_id(image_rel: str, platform: str) -> str:
+    """その画像・そのSNSに既に投稿済みなら、その投稿IDを返す（未投稿なら空文字）。
 
     1日に複数枚を投稿するので、日付ではなく画像ファイル名で判定します。
+    投稿IDを返すのは、途中まで投稿済みの日に再実行したとき、
+    ツリーの続きを正しくぶら下げられるようにするためです。
     """
     for entry in read_log():
         if (entry.get("画像ファイル") == image_rel
                 and entry.get("プラットフォーム") == platform
                 and entry.get("結果") == "成功"):
-            return True
-    return False
+            return (entry.get("投稿ID") or "").strip() or "投稿済み"
+    return ""
+
+
+def already_posted(image_rel: str, platform: str) -> bool:
+    """その画像・そのSNSに既に「成功」の記録があるか（二重投稿の防止）。"""
+    return bool(posted_id(image_rel, platform))
 
 
 # ---------------------------------------------------------------------------
@@ -697,10 +704,12 @@ def main() -> int:
     log(f"■ 対象日: {target_date}（日本時間 {now_jst().strftime('%Y-%m-%d %H:%M')}）")
 
     # --- 今日の行を探す ----------------------------------------------------
+    # ステータス列では絞り込みません。二重投稿の防止は logs/posted.csv を使って
+    # SNSごとに判定しています（Threadsに投稿済みでも、Instagramにはこれから
+    # 投稿する、という状況があるため）。
     targets = [
         (i, row) for i, row in enumerate(rows)
         if (row.get(COL_DATE) or "").strip() == target_date
-        and (row.get(COL_STATUS) or "").strip() != "済"
     ]
 
     if not targets:
@@ -750,9 +759,12 @@ def main() -> int:
 
             log(f"\n▼ {target_date} / {order}枚目 / {image_rel}")
 
-            if already_posted(image_rel, "Threads"):
+            done_id = posted_id(image_rel, "Threads")
+            if done_id:
                 log("  [Threads] 既に投稿済みのためスキップします。")
                 rows[index][COL_STATUS] = "済"
+                # 次の1枚が、この投稿にぶら下がるようにしておく
+                parent_id = done_id if done_id != "投稿済み" else parent_id
                 continue
 
             try:
@@ -824,8 +836,10 @@ def main() -> int:
 
             log(f"\n▼ [X] {target_date} / {order}枚目 / {image_rel}")
 
-            if already_posted(image_rel, "X"):
+            done_id = posted_id(image_rel, "X")
+            if done_id:
                 log("  [X] 既に投稿済みのためスキップします。")
+                parent_id = done_id if done_id != "投稿済み" else parent_id
                 continue
 
             try:
