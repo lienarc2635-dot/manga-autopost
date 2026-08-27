@@ -224,10 +224,11 @@ def fetch_threads_user_id(token: str) -> str:
     return user_id
 
 
-def post_text_to_threads(text: str) -> str:
+def post_text_to_threads(text: str, reply_to_id: str = "") -> str:
     """Threads に「文章だけ」の投稿をする（画像なし）。
 
     夜のテキスト投稿で使います。画像の取り込み待ちがないぶん速く終わります。
+    reply_to_id を渡すと、その投稿への返信として繋がります（ツリー投稿）。
     """
     token = os.environ.get("THREADS_ACCESS_TOKEN", "").strip()
     if not token:
@@ -240,10 +241,15 @@ def post_text_to_threads(text: str) -> str:
     if not user_id:
         user_id = fetch_threads_user_id(token)
 
-    log("  [Threads] テキスト投稿を作成中…")
+    kind = "返信" if reply_to_id else "1つ目"
+    log(f"  [Threads] テキスト投稿を作成中（{kind}）…")
+    payload = {"media_type": "TEXT", "text": text, "access_token": token}
+    if reply_to_id:
+        payload["reply_to_id"] = reply_to_id
+
     res = requests.post(
         f"{THREADS_API}/{user_id}/threads",
-        data={"media_type": "TEXT", "text": text, "access_token": token},
+        data=payload,
         timeout=60,
     )
     if res.status_code != 200:
@@ -732,50 +738,68 @@ def run_text_mode(args) -> int:
     with TEXT_POSTS_CSV.open("r", encoding="utf-8-sig", newline="") as f:
         rows = list(csv.DictReader(f))
 
-    target = None
-    for row in rows:
-        if (row.get(COL_DATE) or "").strip() == target_date:
-            target = row
-            break
+    # その日の行をすべて集める（CSVに並んでいる順が、そのままツリーの順になります）
+    targets = [row for row in rows if (row.get(COL_DATE) or "").strip() == target_date]
 
-    if target is None:
+    if not targets:
         log("本日のテキスト投稿はありませんでした。何もせず終了します。")
         return 0
 
-    text = (target.get(COL_BODY) or "").strip()
-    if not text:
-        log("エラー: 本文が空です。")
-        return 1
-    if len(text) > THREADS_LIMIT:
-        log(f"エラー: 本文が長すぎます（{len(text)}文字 / 上限{THREADS_LIMIT}文字）。")
-        return 1
+    log(f"　この日は {len(targets)} 本をツリー投稿します。")
 
-    marker = "text:" + target_date
-    if already_posted(marker, "Threads"):
-        log("既に投稿済みのためスキップします。")
-        return 0
-
-    log(f"\n▼ {target_date}（{len(text)}文字）")
-    log(text)
-    log("")
+    # --- 事前チェック（1本でもおかしければ、この日は投稿しない）-------------
+    for i, row in enumerate(targets, start=1):
+        text = (row.get(COL_BODY) or "").strip()
+        if not text:
+            log(f"エラー: {i}本目の本文が空です。")
+            return 1
+        if len(text) > THREADS_LIMIT:
+            log(f"エラー: {i}本目が長すぎます（{len(text)}文字 / 上限{THREADS_LIMIT}文字）。")
+            return 1
 
     if args.dry_run:
-        log("[確認のみ] 実際には投稿していません。")
+        for i, row in enumerate(targets, start=1):
+            text = (row.get(COL_BODY) or "").strip()
+            log(f"\n  [確認のみ] {i}本目（{len(text)}文字）")
+            log(text)
         return 0
 
-    try:
-        post_id = post_text_to_threads(text)
-        log(f"  ✓ Threads 投稿成功 (id={post_id})")
-        append_log(target_date, marker, "Threads", True, post_id)
-        return 0
-    except PostError as e:
-        log(f"  ✗ Threads 投稿失敗: {e}")
-        append_log(target_date, marker, "Threads", False, error=str(e))
-        return 1
-    except Exception as e:
-        log(f"  ✗ Threads 投稿失敗（想定外のエラー）: {e}")
-        append_log(target_date, marker, "Threads", False, error=repr(e))
-        return 1
+    # --- 1本目を投稿し、2本目以降はその返信としてぶら下げる -----------------
+    parent_id = ""
+    exit_code = 0
+
+    for i, row in enumerate(targets, start=1):
+        text = (row.get(COL_BODY) or "").strip()
+        marker = f"text:{target_date}:{i}"
+
+        log(f"\n▼ {target_date} / {i}本目（{len(text)}文字）")
+        log(text)
+
+        done_id = posted_id(marker, "Threads")
+        if done_id:
+            log("  既に投稿済みのためスキップします。")
+            parent_id = done_id if done_id != "投稿済み" else parent_id
+            continue
+
+        try:
+            post_id = post_text_to_threads(text, reply_to_id=parent_id)
+            log(f"  ✓ Threads 投稿成功 (id={post_id})")
+            append_log(target_date, marker, "Threads", True, post_id)
+            parent_id = post_id
+        except PostError as e:
+            log(f"  ✗ Threads 投稿失敗: {e}")
+            append_log(target_date, marker, "Threads", False, error=str(e))
+            log("  ツリーが途切れるため、この日の残りは中止します。")
+            exit_code = 1
+            break
+        except Exception as e:
+            log(f"  ✗ Threads 投稿失敗（想定外のエラー）: {e}")
+            append_log(target_date, marker, "Threads", False, error=repr(e))
+            log("  ツリーが途切れるため、この日の残りは中止します。")
+            exit_code = 1
+            break
+
+    return exit_code
 
 
 # ---------------------------------------------------------------------------
