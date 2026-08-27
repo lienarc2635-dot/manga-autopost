@@ -1,0 +1,70 @@
+name: 夜のテキスト投稿
+
+on:
+  schedule:
+    # ↓↓↓ 投稿時刻。UTC 12:00 ＝ 日本時間 21:00
+    #     例）日本時間 20:00 にしたい → '0 11 * * *'
+    #         日本時間 22:00 にしたい → '0 13 * * *'
+    #     ※ GitHub の混雑状況により、実際の実行は5〜30分ほど遅れることがあります。
+    - cron: '0 12 * * *'
+
+  workflow_dispatch:
+    inputs:
+      date:
+        description: '投稿する日付（例 2026-08-27）。空なら今日'
+        required: false
+        default: ''
+      dry_run:
+        description: '本当に投稿せず、内容チェックだけする'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: リポジトリを取得
+        uses: actions/checkout@v4
+
+      - name: Python を準備
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 必要なライブラリをインストール
+        run: pip install -r requirements.txt
+
+      - name: テキスト投稿を実行
+        id: post
+        continue-on-error: true
+        env:
+          THREADS_USER_ID: ${{ secrets.THREADS_USER_ID }}
+          THREADS_ACCESS_TOKEN: ${{ secrets.THREADS_ACCESS_TOKEN }}
+        run: |
+          ARGS="--mode text"
+          if [ -n "${{ github.event.inputs.date }}" ]; then ARGS="$ARGS --date ${{ github.event.inputs.date }}"; fi
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+          python post.py $ARGS
+
+      - name: 投稿記録をリポジトリに保存
+        run: |
+          git config user.name  "manga-autopost bot"
+          git config user.email "actions@github.com"
+          git add -A logs/ 2>/dev/null || true
+          if git diff --staged --quiet; then
+            echo "保存する変更はありません。"
+          else
+            git commit -m "夜のテキスト投稿の記録を更新 ($(TZ=Asia/Tokyo date '+%Y-%m-%d'))"
+            git pull --rebase
+            git push
+          fi
+
+      - name: 投稿が失敗していたらワークフローも失敗させる
+        if: steps.post.outcome == 'failure'
+        run: |
+          echo "::error::テキスト投稿に失敗しました。上のログを確認してください。"
+          exit 1

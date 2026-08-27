@@ -40,6 +40,7 @@ BASE_DIR = Path(__file__).resolve().parent
 POSTS_CSV = BASE_DIR / "posts.csv"
 LOG_CSV = BASE_DIR / "logs" / "posted.csv"
 INSTAGRAM_CSV = BASE_DIR / "instagram.csv"
+TEXT_POSTS_CSV = BASE_DIR / "text-posts.csv"
 
 JST = ZoneInfo("Asia/Tokyo") if ZoneInfo else None
 
@@ -60,6 +61,7 @@ COL_X_TEXT = "X本文"
 COL_TH_TEXT = "Threads本文"
 COL_STATUS = "ステータス"
 COL_CAPTION = "キャプション"
+COL_BODY = "本文"
 CSV_COLUMNS = [COL_DATE, COL_IMAGE, COL_X_TEXT, COL_TH_TEXT, COL_STATUS]
 
 LOG_COLUMNS = ["日時", "投稿日", "画像ファイル", "プラットフォーム", "結果", "投稿ID", "エラー内容"]
@@ -220,6 +222,50 @@ def fetch_threads_user_id(token: str) -> str:
 
     log(f"  [Threads] 投稿先アカウント: @{body.get('username', '(不明)')}")
     return user_id
+
+
+def post_text_to_threads(text: str) -> str:
+    """Threads に「文章だけ」の投稿をする（画像なし）。
+
+    夜のテキスト投稿で使います。画像の取り込み待ちがないぶん速く終わります。
+    """
+    token = os.environ.get("THREADS_ACCESS_TOKEN", "").strip()
+    if not token:
+        raise PostError(
+            "Threadsの設定がありません。GitHub の Settings → Secrets に "
+            "THREADS_ACCESS_TOKEN を登録してください。"
+        )
+
+    user_id = os.environ.get("THREADS_USER_ID", "").strip()
+    if not user_id:
+        user_id = fetch_threads_user_id(token)
+
+    log("  [Threads] テキスト投稿を作成中…")
+    res = requests.post(
+        f"{THREADS_API}/{user_id}/threads",
+        data={"media_type": "TEXT", "text": text, "access_token": token},
+        timeout=60,
+    )
+    if res.status_code != 200:
+        raise PostError(_threads_error_message(res))
+
+    container_id = res.json().get("id")
+    if not container_id:
+        raise PostError(f"Threadsのコンテナ作成に失敗しました: {res.text[:300]}")
+
+    # 画像がないので待ち時間は短くて済みますが、念のため少しだけ待ちます
+    time.sleep(3)
+
+    log("  [Threads] 公開中…")
+    publish_res = requests.post(
+        f"{THREADS_API}/{user_id}/threads_publish",
+        data={"creation_id": container_id, "access_token": token},
+        timeout=60,
+    )
+    if publish_res.status_code != 200:
+        raise PostError(_threads_error_message(publish_res))
+
+    return str(publish_res.json().get("id", ""))
 
 
 def post_to_threads(text: str, image_url: str, reply_to_id: str = "") -> str:
@@ -671,6 +717,68 @@ def build_instagram_image_url(image_rel: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# 夜のテキスト投稿
+# ---------------------------------------------------------------------------
+
+def run_text_mode(args) -> int:
+    """text-posts.csv から、その日の1本をテキストだけで投稿する。"""
+    target_date = args.date or now_jst().strftime("%Y-%m-%d")
+    log(f"■ 夜のテキスト投稿 / 対象日: {target_date}")
+
+    if not TEXT_POSTS_CSV.exists():
+        log("text-posts.csv がありません。何もせず終了します。")
+        return 0
+
+    with TEXT_POSTS_CSV.open("r", encoding="utf-8-sig", newline="") as f:
+        rows = list(csv.DictReader(f))
+
+    target = None
+    for row in rows:
+        if (row.get(COL_DATE) or "").strip() == target_date:
+            target = row
+            break
+
+    if target is None:
+        log("本日のテキスト投稿はありませんでした。何もせず終了します。")
+        return 0
+
+    text = (target.get(COL_BODY) or "").strip()
+    if not text:
+        log("エラー: 本文が空です。")
+        return 1
+    if len(text) > THREADS_LIMIT:
+        log(f"エラー: 本文が長すぎます（{len(text)}文字 / 上限{THREADS_LIMIT}文字）。")
+        return 1
+
+    marker = "text:" + target_date
+    if already_posted(marker, "Threads"):
+        log("既に投稿済みのためスキップします。")
+        return 0
+
+    log(f"\n▼ {target_date}（{len(text)}文字）")
+    log(text)
+    log("")
+
+    if args.dry_run:
+        log("[確認のみ] 実際には投稿していません。")
+        return 0
+
+    try:
+        post_id = post_text_to_threads(text)
+        log(f"  ✓ Threads 投稿成功 (id={post_id})")
+        append_log(target_date, marker, "Threads", True, post_id)
+        return 0
+    except PostError as e:
+        log(f"  ✗ Threads 投稿失敗: {e}")
+        append_log(target_date, marker, "Threads", False, error=str(e))
+        return 1
+    except Exception as e:
+        log(f"  ✗ Threads 投稿失敗（想定外のエラー）: {e}")
+        append_log(target_date, marker, "Threads", False, error=repr(e))
+        return 1
+
+
+# ---------------------------------------------------------------------------
 # メイン処理
 # ---------------------------------------------------------------------------
 
@@ -683,7 +791,13 @@ def main() -> int:
                         help="片方のSNSだけに投稿する（テスト用）")
     parser.add_argument("--validate-all", action="store_true",
                         help="posts.csv の全行をチェックする（投稿はしない）")
+    parser.add_argument("--mode", choices=["manga", "text"], default="manga",
+                        help="manga=朝の漫画投稿（既定） / text=夜のテキスト投稿")
     args = parser.parse_args()
+
+    # --- 夜のテキスト投稿モード --------------------------------------------
+    if args.mode == "text":
+        return run_text_mode(args)
 
     rows = read_posts()
 
