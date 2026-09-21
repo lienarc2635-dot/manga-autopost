@@ -1,9 +1,9 @@
-name: Threadsトークンの自動更新
+name: トークンの自動更新（Threads・Instagram）
 
 on:
   schedule:
     # 毎週月曜の日本時間 9:00（UTC 0:00）に実行。
-    # Threads のトークンは60日で切れますが、毎週延長するので切れません。
+    # Threads も Instagram もトークンは60日で切れますが、毎週延長するので切れません。
     - cron: '0 0 * * 1'
   workflow_dispatch:
 
@@ -23,8 +23,16 @@ jobs:
       - name: 必要なライブラリをインストール
         run: pip install -r requirements.txt
 
-      - name: トークンを延長して保存
+      - name: Threads のトークンを延長して保存
         env:
           THREADS_ACCESS_TOKEN: ${{ secrets.THREADS_ACCESS_TOKEN }}
           GH_PAT: ${{ secrets.GH_PAT }}
         run: python refresh_threads_token.py
+
+      # Threads 側が失敗しても、Instagram 側は必ず実行する
+      - name: Instagram のトークンを延長して保存
+        if: always()
+        env:
+          INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: python refresh_instagram_token.py
