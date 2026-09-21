@@ -3,7 +3,7 @@
 毎日きまった時刻に、3コマ漫画を **Threads**（3枚のツリー）と **Instagram**（3枚のカルーセル）へ自動で投稿します。
 パソコンの電源が入っていなくても、GitHub というサービス上で勝手に動きます。
 
-**今の設定：Threads ＋ Instagram。** X（旧Twitter）も後から足せるようになっています（→[X を後から足す](#x-を後から足す)）。
+**今の設定：Threads のみ（2026-09-21にInstagramを停止）。** Instagramを再開するときは `daily-post.yml` の `ENABLE_INSTAGRAM` を true に戻すだけです。 X（旧Twitter）も後から足せるようになっています（→[X を後から足す](#x-を後から足す)）。
 
 ---
 

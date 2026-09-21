@@ -21,7 +21,7 @@ import os
 import sys
 import time
 import unicodedata
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import requests
@@ -728,7 +728,17 @@ def build_instagram_image_url(image_rel: str) -> str:
 
 def run_text_mode(args) -> int:
     """text-posts.csv から、その日の1本をテキストだけで投稿する。"""
-    target_date = args.date or now_jst().strftime("%Y-%m-%d")
+    # GitHub の実行は数時間遅れることがあり、21時の便が日付をまたぐと
+    # 「翌日の分」を探して何もせず終わってしまう（2026-09-20に実際に起きた）。
+    # 夜の便なので、日本時間の正午より前に動いたときは「前日の分」とみなす。
+    now = now_jst()
+    if args.date:
+        target_date = args.date
+    elif now.hour < 12:
+        target_date = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+        log(f"日付をまたいで実行されたため、前日（{target_date}）の分を投稿します。")
+    else:
+        target_date = now.strftime("%Y-%m-%d")
     log(f"■ 夜のテキスト投稿 / 対象日: {target_date}")
 
     if not TEXT_POSTS_CSV.exists():
